@@ -56,13 +56,15 @@ import {
 } from "../lib/pip01";
 
 const SECRET_KEY_STORAGE = "pontmore-pip00-poc-secret-key";
+const AGENT_SECRET_KEY_STORAGE = "pontmore-pip00-poc-agent-secret-key";
 const ESCROW_SECRET_KEY_STORAGE = "pontmore-pip00-poc-escrow-secret-key";
 const RELAYS_STORAGE = "pontmore-pip00-poc-relays";
 const LOGO_SRC = "/logo.svg";
+const PROFILE_KIND = 0;
 
 type PublishState = "idle" | "publishing" | "published" | "failed";
 type DirectoryState = "idle" | "loading" | "loaded" | "failed";
-type ActiveTab = "discover" | "publish" | "escrow-discover" | "escrow-publish" | "settings";
+type ActiveTab = "discover" | "publish" | "escrow-discover" | "escrow-publish" | "profile" | "settings";
 type ApiRelayResult = {
   relay: string;
   ok: boolean;
@@ -74,6 +76,24 @@ type DirectorySnapshot = {
   lastRefreshAt: string | null;
   refreshing: boolean;
 };
+type ProfileContent = {
+  name?: string;
+  display_name?: string;
+  about?: string;
+  picture?: string;
+  banner?: string;
+  website?: string;
+  nip05?: string;
+  lud16?: string;
+};
+type ProfileSnapshot = {
+  events: NostrEvent[];
+  results: ApiRelayResult[];
+};
+type AuthSession =
+  | { type: "nip07"; pubkey: string }
+  | { type: "local"; pubkey: string; secretKey: Uint8Array };
+type AuthStatus = "idle" | "connecting" | "creating" | "failed";
 type FilterField = {
   label: string;
   value: string;
@@ -86,6 +106,16 @@ type RelayFooterConfig = {
   lines: string[];
   severity: "info" | "error";
 };
+type NostrExtension = {
+  getPublicKey?: () => Promise<string>;
+  signEvent?: (event: Omit<NostrEvent, "id" | "sig">) => Promise<NostrEvent>;
+};
+
+declare global {
+  interface Window {
+    nostr?: NostrExtension;
+  }
+}
 
 enum SwapDirection {
   FiatToBtc = "fiat-to-btc",
@@ -183,15 +213,32 @@ const PIP_LINKS: Partial<Record<ActiveTab, { href: string; label: string }>> = {
     href: "https://github.com/pontmore/protocol/blob/main/PIP-01-escrow-descriptor.md",
     label: "View PIP-01",
   },
+  profile: {
+    href: "https://github.com/nostr-protocol/nips/blob/master/01.md",
+    label: "View NIP-01",
+  },
 };
 
 export function AgentDirectory() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("discover");
+  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus>("idle");
+  const [authMessage, setAuthMessage] = useState("");
+  const [profileState, setProfileState] = useState<PublishState>("idle");
+  const [profileLog, setProfileLog] = useState<string[]>([]);
+  const [profileName, setProfileName] = useState("");
+  const [profileDisplayName, setProfileDisplayName] = useState("");
+  const [profileAbout, setProfileAbout] = useState("");
+  const [profilePicture, setProfilePicture] = useState("");
+  const [profileBanner, setProfileBanner] = useState("");
+  const [profileWebsite, setProfileWebsite] = useState("");
+  const [profileNip05, setProfileNip05] = useState("");
+  const [profileLud16, setProfileLud16] = useState("");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [relays, setRelays] = useState<string[]>([...DEFAULT_RELAYS]);
   const [relayInput, setRelayInput] = useState([...DEFAULT_RELAYS].join("\n"));
   const [settingsState, setSettingsState] = useState<"idle" | "saved" | "failed">("idle");
-  const [secretKey, setSecretKey] = useState<Uint8Array | null>(null);
+  const [agentSecretKey, setAgentSecretKey] = useState<Uint8Array | null>(null);
   const [escrowSecretKey, setEscrowSecretKey] = useState<Uint8Array | null>(null);
   const [name, setName] = useState("Pontmore Demo Agent");
   const [about, setAbout] = useState("A PIP-00 proof-of-concept agent profile.");
@@ -249,27 +296,27 @@ export function AgentDirectory() {
 
   useEffect(() => {
     const stored = window.localStorage.getItem(SECRET_KEY_STORAGE);
-    if (stored) {
-      setSecretKey(hexToBytes(stored));
+    if (!stored) {
       return;
     }
 
-    const generated = generateSecretKey();
-    window.localStorage.setItem(SECRET_KEY_STORAGE, bytesToHex(generated));
-    setSecretKey(generated);
+    const secret = hexToBytes(stored);
+    setAuthSession({ type: "local", pubkey: getPublicKey(secret), secretKey: secret });
+  }, []);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(AGENT_SECRET_KEY_STORAGE);
+    if (stored) {
+      setAgentSecretKey(hexToBytes(stored));
+    }
   }, []);
 
   useEffect(() => {
     const stored = window.localStorage.getItem(ESCROW_SECRET_KEY_STORAGE);
     if (stored) {
       setEscrowSecretKey(hexToBytes(stored));
-      return;
     }
-
-    if (secretKey) {
-      setEscrowSecretKey(secretKey);
-    }
-  }, [secretKey]);
+  }, []);
 
   useEffect(() => {
     const stored = window.localStorage.getItem(RELAYS_STORAGE);
@@ -301,13 +348,13 @@ export function AgentDirectory() {
     setPayoutNetwork(Network.Lightning);
   }, [escrowType]);
 
-  const pubkey = useMemo(() => (secretKey ? getPublicKey(secretKey) : ""), [secretKey]);
+  const sessionPubkey = authSession?.pubkey ?? "";
+  const agentPubkey = useMemo(() => (agentSecretKey ? getPublicKey(agentSecretKey) : sessionPubkey), [agentSecretKey, sessionPubkey]);
+  const pubkey = agentPubkey;
   const npub = useMemo(() => (pubkey ? nip19.npubEncode(pubkey) : ""), [pubkey]);
-  const nsec = useMemo(() => (secretKey ? nip19.nsecEncode(secretKey) : ""), [secretKey]);
-  const escrowPubkey = useMemo(() => (escrowSecretKey ? getPublicKey(escrowSecretKey) : ""), [escrowSecretKey]);
+  const escrowPubkey = useMemo(() => (escrowSecretKey ? getPublicKey(escrowSecretKey) : sessionPubkey), [escrowSecretKey, sessionPubkey]);
   const escrowNpub = useMemo(() => (escrowPubkey ? nip19.npubEncode(escrowPubkey) : ""), [escrowPubkey]);
-  const escrowNsec = useMemo(() => (escrowSecretKey ? nip19.nsecEncode(escrowSecretKey) : ""), [escrowSecretKey]);
-  const effectiveEscrowAddress = escrowAddress.trim() || (pubkey ? `30361:${pubkey}:escrow` : "");
+  const effectiveEscrowAddress = escrowAddress.trim() || (escrowPubkey ? `30361:${escrowPubkey}:escrow` : "");
   const escrowAddressOptions = useMemo(() => {
     const discovered = escrows.map((escrow) => ({
       label: `${escrow.content?.escrow_type || escrow.escrowType || "Escrow"} (${escrow.identifier})`,
@@ -365,11 +412,121 @@ export function AgentDirectory() {
           <Button variant="contained" onClick={refreshEscrowDirectory} disabled={escrowDirectoryState === "loading"}>
             {escrowDirectoryState === "loading" ? "Refreshing..." : "Refresh escrows"}
           </Button>
-        )
-      : null;
+      )
+    : null;
+
+  async function signAgentEvent(unsignedEvent: Omit<NostrEvent, "id" | "sig">): Promise<NostrEvent> {
+    if (agentSecretKey) {
+      return finalizeEvent(unsignedEvent, agentSecretKey) as NostrEvent;
+    }
+
+    return signSessionEvent(unsignedEvent);
+  }
+
+  async function signSessionEvent(unsignedEvent: Omit<NostrEvent, "id" | "sig">): Promise<NostrEvent> {
+    if (!authSession) {
+      throw new Error("Sign in before publishing.");
+    }
+
+    if (authSession.type === "local") {
+      return finalizeEvent(unsignedEvent, authSession.secretKey) as NostrEvent;
+    }
+
+    const signed = await window.nostr?.signEvent?.(unsignedEvent);
+    if (!signed || signed.pubkey !== authSession.pubkey) {
+      throw new Error("NIP-07 signer returned a different identity.");
+    }
+
+    return signed;
+  }
+
+  async function signEscrowEvent(unsignedEvent: Omit<NostrEvent, "id" | "sig">): Promise<NostrEvent> {
+    if (escrowSecretKey) {
+      return finalizeEvent(unsignedEvent, escrowSecretKey) as NostrEvent;
+    }
+
+    return signSessionEvent(unsignedEvent);
+  }
+
+  function buildProfileEvent(): Omit<NostrEvent, "id" | "sig"> {
+    const content: ProfileContent = {
+      name: profileName.trim() || undefined,
+      display_name: profileDisplayName.trim() || undefined,
+      about: profileAbout.trim() || undefined,
+      picture: profilePicture.trim() || undefined,
+      banner: profileBanner.trim() || undefined,
+      website: profileWebsite.trim() || undefined,
+      nip05: profileNip05.trim() || undefined,
+      lud16: profileLud16.trim() || undefined,
+    };
+
+    return {
+      pubkey: sessionPubkey,
+      created_at: Math.floor(Date.now() / 1000),
+      kind: PROFILE_KIND,
+      tags: [],
+      content: JSON.stringify(removeEmptyProfileFields(content)),
+    };
+  }
+
+  async function publishProfile() {
+    if (!authSession || !sessionPubkey) {
+      return;
+    }
+
+    setProfileState("publishing");
+    setProfileLog([]);
+
+    try {
+      const event = await signSessionEvent(buildProfileEvent());
+      const response = await fetch("/api/profile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ relays, event }),
+      });
+      const payload = await response.json();
+      const results = Array.isArray(payload.results) ? payload.results as ApiRelayResult[] : [];
+      setProfileLog(results.map((result) => `${result.relay}: ${result.ok ? "OK" : "failed"} - ${result.message}`));
+      setProfileState(results.some((result) => result.ok) ? "published" : "failed");
+    } catch {
+      setProfileLog(["Profile publish failed. Check the signer and relay connection."]);
+      setProfileState("failed");
+    }
+  }
+
+  async function loadProfileForIdentity(identityPubkey: string) {
+    try {
+      const response = await fetch(`/api/profile?${relaySearchParams(relays)}&pubkey=${encodeURIComponent(identityPubkey)}`, { cache: "no-store" });
+      if (!response.ok) {
+        return;
+      }
+
+      const snapshot = await response.json() as ProfileSnapshot;
+      const latest = snapshot.events[0];
+      if (!latest?.content) {
+        return;
+      }
+
+      const parsed = JSON.parse(latest.content) as ProfileContent;
+      prefillProfileForm(parsed);
+    } catch {
+      setProfileLog(["Unable to load Nostr profile metadata."]);
+    }
+  }
+
+  function prefillProfileForm(profile: ProfileContent) {
+    setProfileName(profile.name || "");
+    setProfileDisplayName(profile.display_name || "");
+    setProfileAbout(profile.about || "");
+    setProfilePicture(profile.picture || "");
+    setProfileBanner(profile.banner || "");
+    setProfileWebsite(profile.website || "");
+    setProfileNip05(profile.nip05 || "");
+    setProfileLud16(profile.lud16 || "");
+  }
 
   async function publishAgent() {
-    if (!secretKey || !pubkey) {
+    if (!authSession || !pubkey) {
       return;
     }
 
@@ -393,9 +550,9 @@ export function AgentDirectory() {
       escrowNotes,
       relays,
     });
-    const event = finalizeEvent(unsignedEvent, secretKey) as NostrEvent;
 
     try {
+      const event = await signAgentEvent(unsignedEvent);
       const response = await fetch("/api/agents/publish", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -406,7 +563,7 @@ export function AgentDirectory() {
       setPublishLog(results.map((result) => `${result.relay}: ${result.ok ? "OK" : "failed"} - ${result.message}`));
       setPublishState(results.some((result) => result.ok) ? "published" : "failed");
     } catch {
-      setPublishLog(["Server-side publish failed."]);
+      setPublishLog(["Publish failed. Check the signer and relay connection."]);
       setPublishState("failed");
     }
   }
@@ -486,7 +643,7 @@ export function AgentDirectory() {
   }
 
   async function publishEscrow() {
-    if (!escrowSecretKey || !escrowPubkey) {
+    if (!authSession || !escrowPubkey) {
       return;
     }
 
@@ -517,9 +674,9 @@ export function AgentDirectory() {
       preimageVisibility,
       payoutNetwork,
     });
-    const event = finalizeEvent(unsignedEvent, escrowSecretKey) as NostrEvent;
 
     try {
+      const event = await signEscrowEvent(unsignedEvent);
       const response = await fetch("/api/escrows/publish", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -530,7 +687,7 @@ export function AgentDirectory() {
       setEscrowPublishLog(results.map((result) => `${result.relay}: ${result.ok ? "OK" : "failed"} - ${result.message}`));
       setEscrowPublishState(results.some((result) => result.ok) ? "published" : "failed");
     } catch {
-      setEscrowPublishLog(["Server-side escrow publish failed."]);
+      setEscrowPublishLog(["Escrow publish failed. Check the signer and relay connection."]);
       setEscrowPublishState("failed");
     }
   }
@@ -609,30 +766,110 @@ export function AgentDirectory() {
     setEscrowDirectoryLog(snapshot.results.map((item) => `${item.relay}: ${item.ok ? "OK" : "failed"} - ${item.message}`));
   }
 
-  function resetIdentity() {
-    const generated = generateSecretKey();
-    loadAgentIdentity(generated);
+  async function loginWithNip07() {
+    setAuthStatus("connecting");
+    setAuthMessage("");
+
+    try {
+      if (!window.nostr?.getPublicKey || !window.nostr.signEvent) {
+        setAuthStatus("failed");
+        setAuthMessage("Install or enable a NIP-07 browser signer to log in.");
+        return;
+      }
+
+      const extensionPubkey = await window.nostr.getPublicKey();
+      const challenge = `pontmore-login-${Date.now()}`;
+      const signed = await window.nostr.signEvent({
+        kind: 22242,
+        pubkey: extensionPubkey,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["challenge", challenge]],
+        content: "Log in to Pontmore proof of concept",
+      });
+
+      if (signed.pubkey !== extensionPubkey) {
+        setAuthStatus("failed");
+        setAuthMessage("The signer returned a different Nostr identity.");
+        return;
+      }
+
+      setAuthSession({ type: "nip07", pubkey: extensionPubkey });
+      setAuthStatus("idle");
+      setActiveTab("discover");
+      setPublishState("idle");
+      setPublishLog([]);
+      setEscrowPublishState("idle");
+      setEscrowPublishLog([]);
+      void loadProfileForIdentity(extensionPubkey);
+      void loadAgentDefinitionForIdentity(extensionPubkey);
+      void loadEscrowDefinitionForIdentity(extensionPubkey);
+    } catch {
+      setAuthStatus("failed");
+      setAuthMessage("NIP-07 login was cancelled or failed.");
+    }
   }
 
-  function loadAgentIdentity(secret: Uint8Array) {
-    window.localStorage.setItem(SECRET_KEY_STORAGE, bytesToHex(secret));
-    setSecretKey(secret);
+  function createLocalIdentity() {
+    setAuthStatus("creating");
+    setAuthMessage("");
+    const generated = generateSecretKey();
+    const generatedPubkey = getPublicKey(generated);
+    window.localStorage.setItem(SECRET_KEY_STORAGE, bytesToHex(generated));
+    setAuthSession({ type: "local", pubkey: generatedPubkey, secretKey: generated });
+    setAuthStatus("idle");
+    setActiveTab("discover");
     setPublishState("idle");
     setPublishLog([]);
-    void loadAgentDefinitionForIdentity(getPublicKey(secret));
+    setEscrowPublishState("idle");
+    setEscrowPublishLog([]);
+    void loadProfileForIdentity(generatedPubkey);
+    void loadAgentDefinitionForIdentity(generatedPubkey);
+    void loadEscrowDefinitionForIdentity(generatedPubkey);
+  }
+
+  function generateFreshAgentIdentity() {
+    const generated = generateSecretKey();
+    window.localStorage.setItem(AGENT_SECRET_KEY_STORAGE, bytesToHex(generated));
+    setAgentSecretKey(generated);
+    setPublishState("idle");
+    setPublishLog([]);
+    void loadAgentDefinitionForIdentity(getPublicKey(generated));
+  }
+
+  function useLoginIdentityForAgent() {
+    window.localStorage.removeItem(AGENT_SECRET_KEY_STORAGE);
+    setAgentSecretKey(null);
+    setPublishState("idle");
+    setPublishLog([]);
+    if (sessionPubkey) {
+      void loadAgentDefinitionForIdentity(sessionPubkey);
+    }
   }
 
   function generateFreshEscrowIdentity() {
     const generated = generateSecretKey();
-    loadEscrowIdentity(generated);
-  }
-
-  function loadEscrowIdentity(secret: Uint8Array) {
-    window.localStorage.setItem(ESCROW_SECRET_KEY_STORAGE, bytesToHex(secret));
-    setEscrowSecretKey(secret);
+    window.localStorage.setItem(ESCROW_SECRET_KEY_STORAGE, bytesToHex(generated));
+    setEscrowSecretKey(generated);
     setEscrowPublishState("idle");
     setEscrowPublishLog([]);
-    void loadEscrowDefinitionForIdentity(getPublicKey(secret));
+    void loadEscrowDefinitionForIdentity(getPublicKey(generated));
+  }
+
+  function useLoginIdentityForEscrow() {
+    window.localStorage.removeItem(ESCROW_SECRET_KEY_STORAGE);
+    setEscrowSecretKey(null);
+    setEscrowPublishState("idle");
+    setEscrowPublishLog([]);
+    if (sessionPubkey) {
+      void loadEscrowDefinitionForIdentity(sessionPubkey);
+    }
+  }
+
+  function logout() {
+    setAuthSession(null);
+    setActiveTab("discover");
+    setAuthStatus("idle");
+    setAuthMessage("");
   }
 
   async function loadAgentDefinitionForIdentity(identityPubkey: string) {
@@ -788,6 +1025,17 @@ export function AgentDirectory() {
     setMobileNavOpen(false);
   }
 
+  if (!authSession) {
+    return (
+      <LandingPage
+        status={authStatus}
+        message={authMessage}
+        onLogin={loginWithNip07}
+        onCreateIdentity={createLocalIdentity}
+      />
+    );
+  }
+
   const relayFooter = activeTab === "discover"
     ? {
         title: "Agent relay reads",
@@ -848,7 +1096,7 @@ export function AgentDirectory() {
           },
         }}
       >
-        <DashboardNav activeTab={activeTab} onSelect={selectTab} />
+        <DashboardNav activeTab={activeTab} session={authSession} onSelect={selectTab} onProfile={() => selectTab("profile")} onLogout={logout} />
       </Drawer>
 
       <Drawer
@@ -864,7 +1112,7 @@ export function AgentDirectory() {
           },
         }}
       >
-        <DashboardNav activeTab={activeTab} onSelect={selectTab} />
+        <DashboardNav activeTab={activeTab} session={authSession} onSelect={selectTab} onProfile={() => selectTab("profile")} onLogout={logout} />
       </Drawer>
 
       <Box
@@ -882,15 +1130,14 @@ export function AgentDirectory() {
           <Box sx={{ display: "grid", gap: 2.5, gridTemplateColumns: { xs: "1fr", md: "320px 1fr" }, alignItems: "start" }}>
             <IdentityPanel
               title="Agent Identity"
-              note="Agent signing keys are generated in this browser and stored in localStorage on this device."
-              publicLabel="Agent public key (npub)"
-              secretLabel="Agent secret key (nsec)"
+              note={agentSecretKey ? "Agent events are signed by a locally generated agent identity." : "Agent events default to the logged-in Nostr identity."}
               npub={npub}
-              nsec={nsec}
-              fallbackText="Generating..."
-              actionLabel="Generate New Agent Identity"
-              onAction={resetIdentity}
-              onImport={loadAgentIdentity}
+              pubkey={pubkey}
+              method={agentSecretKey ? "local" : authSession.type}
+              actionLabel="Create Agent Identity"
+              onAction={generateFreshAgentIdentity}
+              secondaryActionLabel={agentSecretKey ? "Use Login Identity" : undefined}
+              onSecondaryAction={agentSecretKey ? useLoginIdentityForAgent : undefined}
             />
 
             <Card variant="outlined">
@@ -1005,7 +1252,7 @@ export function AgentDirectory() {
 
                   {publishLog.length > 0 ? <StatusLog title="Publish results" lines={publishLog} severity={publishState === "failed" ? "error" : "info"} /> : null}
                   <Stack direction="row" sx={{ justifyContent: "flex-end" }}>
-                    <Button variant="contained" onClick={publishAgent} disabled={!secretKey || publishState === "publishing"}>
+                    <Button variant="contained" onClick={publishAgent} disabled={!authSession || publishState === "publishing"}>
                       {publishState === "publishing" ? "Publishing..." : "Publish Agent"}
                     </Button>
                   </Stack>
@@ -1019,15 +1266,14 @@ export function AgentDirectory() {
           <Box sx={{ display: "grid", gap: 2.5, gridTemplateColumns: { xs: "1fr", md: "320px 1fr" }, alignItems: "start" }}>
             <IdentityPanel
               title="Escrow Identity"
-              note="Escrow descriptors default to the agent identity until a fresh escrow identity is generated and stored locally."
-              publicLabel="Escrow public key (npub)"
-              secretLabel="Escrow secret key (nsec)"
+              note={escrowSecretKey ? "Escrow events are signed by a locally generated escrow identity." : "Escrow events default to the logged-in Nostr identity."}
               npub={escrowNpub}
-              nsec={escrowNsec}
-              fallbackText="Using agent identity..."
-              actionLabel="Generate New Escrow Identity"
+              pubkey={escrowPubkey}
+              method={escrowSecretKey ? "local" : authSession.type}
+              actionLabel="Create Escrow Identity"
               onAction={generateFreshEscrowIdentity}
-              onImport={loadEscrowIdentity}
+              secondaryActionLabel={escrowSecretKey ? "Use Login Identity" : undefined}
+              onSecondaryAction={escrowSecretKey ? useLoginIdentityForEscrow : undefined}
             />
 
             <Card variant="outlined">
@@ -1133,8 +1379,49 @@ export function AgentDirectory() {
 
                   {escrowPublishLog.length > 0 ? <StatusLog title="Publish results" lines={escrowPublishLog} severity={escrowPublishState === "failed" ? "error" : "info"} /> : null}
                   <Stack direction="row" sx={{ justifyContent: "flex-end" }}>
-                    <Button variant="contained" onClick={publishEscrow} disabled={!escrowSecretKey || escrowPublishState === "publishing"}>
+                    <Button variant="contained" onClick={publishEscrow} disabled={!authSession || escrowPublishState === "publishing"}>
                       {escrowPublishState === "publishing" ? "Publishing..." : "Publish Escrow Descriptor"}
+                    </Button>
+                  </Stack>
+                </Stack>
+              </CardContent>
+            </Card>
+          </Box>
+        ) : null}
+
+        {activeTab === "profile" ? (
+          <Box sx={{ display: "grid", gap: 2.5, gridTemplateColumns: { xs: "1fr", md: "320px 1fr" }, alignItems: "start" }}>
+            <NostrProfileCard session={authSession} onProfile={() => undefined} onLogout={logout} expanded />
+
+            <Card variant="outlined">
+              <CardContent>
+                <Stack spacing={2}>
+                  <Stack direction="row" spacing={2} sx={{ alignItems: "center", justifyContent: "space-between" }}>
+                    <Box>
+                      <Typography variant="h5" component="h2" sx={{ fontWeight: 800 }}>Profile Management</Typography>
+                      <Typography color="text.secondary" variant="body2" sx={{ mt: 0.5 }}>
+                        Publishes a NIP-01 kind 0 metadata event to your configured relays.
+                      </Typography>
+                    </Box>
+                    <Chip label="kind: 0" variant="outlined" />
+                  </Stack>
+
+                  <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "repeat(2, minmax(0, 1fr))" } }}>
+                    <TextField label="Name" value={profileName} onChange={(event) => setProfileName(event.target.value)} />
+                    <TextField label="Display name" value={profileDisplayName} onChange={(event) => setProfileDisplayName(event.target.value)} />
+                    <TextField label="About" value={profileAbout} onChange={(event) => setProfileAbout(event.target.value)} multiline minRows={4} sx={{ gridColumn: "1 / -1" }} />
+                    <TextField label="Picture URL" value={profilePicture} onChange={(event) => setProfilePicture(event.target.value)} sx={{ gridColumn: "1 / -1" }} />
+                    <TextField label="Banner URL" value={profileBanner} onChange={(event) => setProfileBanner(event.target.value)} sx={{ gridColumn: "1 / -1" }} />
+                    <TextField label="Website" value={profileWebsite} onChange={(event) => setProfileWebsite(event.target.value)} />
+                    <TextField label="NIP-05 identifier" value={profileNip05} onChange={(event) => setProfileNip05(event.target.value)} placeholder="name@example.com" />
+                    <TextField label="Lightning address" value={profileLud16} onChange={(event) => setProfileLud16(event.target.value)} placeholder="name@example.com" />
+                  </Box>
+
+                  {profileLog.length > 0 ? <StatusLog title="Profile publish results" lines={profileLog} severity={profileState === "failed" ? "error" : "info"} /> : null}
+                  <Stack direction="row" spacing={1.5} sx={{ justifyContent: "flex-end" }}>
+                    <Button variant="outlined" onClick={() => loadProfileForIdentity(sessionPubkey)} disabled={profileState === "publishing"}>Reload profile</Button>
+                    <Button variant="contained" onClick={publishProfile} disabled={profileState === "publishing"}>
+                      {profileState === "publishing" ? "Publishing..." : "Publish profile"}
                     </Button>
                   </Stack>
                 </Stack>
@@ -1372,7 +1659,93 @@ function BrandLogo() {
   );
 }
 
-function DashboardNav({ activeTab, onSelect }: { activeTab: ActiveTab; onSelect: (value: ActiveTab) => void }) {
+function LandingPage({
+  status,
+  message,
+  onLogin,
+  onCreateIdentity,
+}: {
+  status: AuthStatus;
+  message: string;
+  onLogin: () => void;
+  onCreateIdentity: () => void;
+}) {
+  return (
+    <Box sx={{ minHeight: "100vh", display: "grid", gridTemplateColumns: { xs: "1fr", md: "0.9fr 1.1fr" } }}>
+      <Box sx={{ alignItems: "center", borderRight: { md: 1 }, borderColor: "divider", display: "flex", p: { xs: 3, md: 6 } }}>
+        <Stack spacing={4} sx={{ maxWidth: 560 }}>
+          <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
+            <BrandLogo />
+            <Box>
+              <Typography variant="h5" sx={{ fontWeight: 900, letterSpacing: 0 }}>PONTMORE</Typography>
+              <Typography color="text.secondary">proof of concept</Typography>
+            </Box>
+          </Stack>
+          <Box>
+            <Typography variant="h2" component="h1" sx={{ fontSize: { xs: 42, md: 58 }, fontWeight: 900, letterSpacing: 0, lineHeight: 1 }}>
+              Discover agents and escrow descriptors on Nostr.
+            </Typography>
+            <Typography color="text.secondary" sx={{ fontSize: 18, mt: 2 }}>
+              Pontmore models interoperable swap agents, escrow rules, and addressable discovery events for Bitcoin commerce workflows.
+            </Typography>
+          </Box>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+            <Button variant="contained" size="large" onClick={onLogin} disabled={status === "connecting" || status === "creating"}>
+              {status === "connecting" ? "Signing..." : "LOG IN"}
+            </Button>
+            <Button color="secondary" variant="outlined" size="large" onClick={onCreateIdentity} disabled={status === "connecting" || status === "creating"}>
+              {status === "creating" ? "Creating..." : "SIGN UP"}
+            </Button>
+          </Stack>
+          {message ? <Alert severity={status === "failed" ? "error" : "info"}>{message}</Alert> : null}
+        </Stack>
+      </Box>
+      <Box sx={{ alignItems: "center", display: "flex", p: { xs: 3, md: 6 } }}>
+        <Stack spacing={2} sx={{ width: "100%" }}>
+          {[
+            ["PIP-00", "Publish agent definitions with capabilities, rails, currencies, and escrow selection."],
+            ["PIP-01", "Describe escrow operators, networks, funding rules, release triggers, and dispute policy."],
+            ["Nostr-first", "Log in with a NIP-07 signer or create a new browser-local proof-of-concept identity."],
+          ].map(([title, body]) => (
+            <Card
+              variant="outlined"
+              key={title}
+              sx={{
+                borderColor: "rgba(240, 140, 0, 0.35)",
+                borderLeft: 4,
+                borderLeftColor: "secondary.main",
+                transition: "border-color 160ms ease, background-color 160ms ease",
+                "&:hover": {
+                  bgcolor: "rgba(240, 140, 0, 0.05)",
+                  borderColor: "secondary.main",
+                },
+              }}
+            >
+              <CardContent>
+                <Typography variant="h6" sx={{ color: "secondary.dark", fontWeight: 800 }}>{title}</Typography>
+                <Typography color="text.secondary" sx={{ mt: 1 }}>{body}</Typography>
+              </CardContent>
+            </Card>
+          ))}
+        </Stack>
+      </Box>
+    </Box>
+  );
+}
+
+function DashboardNav({
+  activeTab,
+  session,
+  onSelect,
+  onProfile,
+  onLogout,
+}: {
+  activeTab: ActiveTab;
+  session: AuthSession;
+  onSelect: (value: ActiveTab) => void;
+  onProfile: () => void;
+  onLogout: () => void;
+}) {
   return (
     <Stack sx={{ height: "100%" }}>
       <Box sx={{ alignItems: "center", display: { md: "none" }, gap: 1.25, p: 2.5 }}>
@@ -1399,7 +1772,48 @@ function DashboardNav({ activeTab, onSelect }: { activeTab: ActiveTab; onSelect:
           </ListItemButton>
         ))}
       </List>
+      <Box sx={{ mt: "auto", p: 1.5 }}>
+        <NostrProfileCard session={session} onProfile={onProfile} onLogout={onLogout} />
+      </Box>
     </Stack>
+  );
+}
+
+function NostrProfileCard({
+  session,
+  onProfile,
+  onLogout,
+  expanded = false,
+}: {
+  session: AuthSession;
+  onProfile: () => void;
+  onLogout: () => void;
+  expanded?: boolean;
+}) {
+  const npub = nip19.npubEncode(session.pubkey);
+
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5 }}>
+      <Stack spacing={1}>
+        <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+          <Box sx={{ bgcolor: "primary.main", borderRadius: 1, height: 34, width: 34 }} />
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="subtitle2" noWrap sx={{ fontWeight: 800 }}>Nostr profile</Typography>
+            <Typography variant="caption" color="text.secondary">
+              {session.type === "nip07" ? "NIP-07 signer" : "Local identity"}
+            </Typography>
+          </Box>
+        </Stack>
+        <Typography variant="caption" sx={{ display: "block", fontFamily: "monospace", overflowWrap: "anywhere" }}>
+          {npub}
+        </Typography>
+        {expanded ? <Detail label="Pubkey">{session.pubkey}</Detail> : null}
+        <Stack direction={expanded ? "row" : "column"} spacing={1}>
+          {!expanded ? <Button variant="outlined" size="small" onClick={onProfile}>See details</Button> : null}
+          <Button variant="outlined" size="small" onClick={onLogout}>Sign out</Button>
+        </Stack>
+      </Stack>
+    </Paper>
   );
 }
 
@@ -1432,50 +1846,25 @@ function StatusLog({ title, lines, severity = "info", compact = false }: { title
 function IdentityPanel({
   title,
   note,
-  publicLabel,
-  secretLabel,
   npub,
-  nsec,
-  fallbackText,
+  pubkey,
+  method,
   actionLabel,
   onAction,
-  onImport,
+  secondaryActionLabel,
+  onSecondaryAction,
 }: {
   title: string;
   note: string;
-  publicLabel: string;
-  secretLabel: string;
   npub: string;
-  nsec: string;
-  fallbackText: string;
-  actionLabel: string;
-  onAction: () => void;
-  onImport: (secret: Uint8Array) => void;
+  pubkey: string;
+  method: AuthSession["type"];
+  actionLabel?: string;
+  onAction?: () => void;
+  secondaryActionLabel?: string;
+  onSecondaryAction?: () => void;
 }) {
   const [npubCopyState, setNpubCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  const [nsecCopyState, setNsecCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  const [importValue, setImportValue] = useState("");
-  const [importState, setImportState] = useState<"idle" | "loaded" | "failed">("idle");
-  const [importMode, setImportMode] = useState(false);
-  const identityName = title.replace(/\s+Identity$/, "");
-
-  function importNsec() {
-    try {
-      const decoded = nip19.decode(importValue.trim());
-      if (decoded.type !== "nsec" || !(decoded.data instanceof Uint8Array)) {
-        setImportState("failed");
-        return;
-      }
-
-      onImport(decoded.data);
-      setImportValue("");
-      setImportMode(false);
-      setImportState("loaded");
-      window.setTimeout(() => setImportState("idle"), 1800);
-    } catch {
-      setImportState("failed");
-    }
-  }
 
   return (
     <Card variant="outlined" sx={{ position: { md: "sticky" }, top: { md: 20 } }}>
@@ -1487,10 +1876,10 @@ function IdentityPanel({
           </Box>
           <Divider />
           <Stack spacing={1}>
-            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800, textTransform: "uppercase" }}>{publicLabel}</Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800, textTransform: "uppercase" }}>Nostr public key</Typography>
             <Stack direction="row" spacing={1} sx={{ alignItems: "stretch" }}>
               <Paper variant="outlined" sx={{ p: 1, flex: 1, bgcolor: "action.hover", overflowWrap: "anywhere", fontFamily: "monospace", fontSize: 12 }}>
-                {npub || fallbackText}
+                {npub || "Not signed in"}
               </Paper>
               <Button variant="outlined" onClick={() => copyIdentityValue(npub, setNpubCopyState)} disabled={!npub}>
                 {npubCopyState === "copied" ? "Copied" : "Copy"}
@@ -1498,57 +1887,12 @@ function IdentityPanel({
             </Stack>
             {npubCopyState === "failed" ? <Alert severity="error">Clipboard write failed.</Alert> : null}
           </Stack>
+          <Detail label="Signing method">{method === "nip07" ? "NIP-07 browser signer" : "Locally created identity"}</Detail>
+          <Detail label="Pubkey">{pubkey ? `${pubkey.slice(0, 18)}...${pubkey.slice(-8)}` : "None"}</Detail>
           <Stack spacing={1}>
-            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800, textTransform: "uppercase" }}>{secretLabel}</Typography>
-            <Stack direction="row" spacing={1} sx={{ alignItems: "stretch" }}>
-              <Paper variant="outlined" sx={{ p: 1, flex: 1, bgcolor: "action.hover", overflowWrap: "anywhere", fontFamily: "monospace", fontSize: 12 }}>
-                {nsec ? `${nsec.slice(0, 18)}...${nsec.slice(-8)}` : fallbackText}
-              </Paper>
-              <Button variant="outlined" onClick={() => copyIdentityValue(nsec, setNsecCopyState)} disabled={!nsec}>
-                {nsecCopyState === "copied" ? "Copied" : "Copy"}
-              </Button>
-            </Stack>
-            {nsecCopyState === "failed" ? <Alert severity="error">Clipboard write failed.</Alert> : null}
+            {actionLabel && onAction ? <Button variant="outlined" onClick={onAction}>{actionLabel}</Button> : null}
+            {secondaryActionLabel && onSecondaryAction ? <Button variant="outlined" onClick={onSecondaryAction}>{secondaryActionLabel}</Button> : null}
           </Stack>
-          {importMode ? (
-            <Stack spacing={1}>
-              <TextField
-                label="Paste nsec"
-                value={importValue}
-                onChange={(event) => {
-                  setImportValue(event.target.value);
-                  setImportState("idle");
-                }}
-                placeholder="nsec1..."
-                type="password"
-              />
-              <Stack direction="row" spacing={1}>
-                <Button variant="contained" onClick={importNsec} disabled={!importValue.trim()} sx={{ flex: 1 }}>
-                  {importState === "loaded" ? "Loaded" : "Load"}
-                </Button>
-                <Button
-                  variant="outlined"
-                  onClick={() => {
-                    setImportMode(false);
-                    setImportValue("");
-                    setImportState("idle");
-                  }}
-                >
-                  Cancel
-                </Button>
-              </Stack>
-              {importState === "failed" ? <Alert severity="error">Enter a valid nsec.</Alert> : null}
-            </Stack>
-          ) : (
-            <Stack spacing={1} sx={{ textAlign: "center" }}>
-              <Button variant="outlined" onClick={onAction}>{actionLabel}</Button>
-              <Typography variant="caption" color="text.secondary" sx={{ textTransform: "uppercase" }}>or</Typography>
-              <Button variant="outlined" onClick={() => setImportMode(true)}>
-                Load Existing {identityName} Identity
-              </Button>
-              {importState === "loaded" ? <Alert severity="success">Identity loaded.</Alert> : null}
-            </Stack>
-          )}
         </Stack>
       </CardContent>
     </Card>
@@ -1782,6 +2126,7 @@ function EscrowCard({
 
   return (
     <DirectoryDefinitionCard
+      accent="orange"
       identifier={escrow.identifier}
       createdAt={escrow.event.created_at}
       json={escrowJson}
@@ -1820,6 +2165,7 @@ function EscrowCard({
 }
 
 function DirectoryDefinitionCard({
+  accent = "green",
   identifier,
   createdAt,
   json,
@@ -1831,6 +2177,7 @@ function DirectoryDefinitionCard({
   editAction,
   children,
 }: {
+  accent?: "green" | "orange";
   identifier: string;
   createdAt: number;
   json: string;
@@ -1842,10 +2189,15 @@ function DirectoryDefinitionCard({
   editAction: React.ReactNode;
   children: React.ReactNode;
 }) {
+  const isOrange = accent === "orange";
+
   return (
     <Card
       variant="outlined"
       sx={{
+        borderColor: isOrange ? "rgba(240, 140, 0, 0.35)" : "rgba(47, 158, 68, 0.35)",
+        borderTop: 4,
+        borderTopColor: isOrange ? "secondary.main" : "primary.main",
         height: { xs: "auto", md: 600 },
         display: "flex",
         flexDirection: "column",
@@ -1854,7 +2206,7 @@ function DirectoryDefinitionCard({
       <CardContent sx={{ flexGrow: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
         <Stack spacing={1.5} sx={{ flexGrow: 1, minHeight: 0 }}>
           <Stack direction="row" spacing={1} sx={{ justifyContent: "space-between", alignItems: "center" }}>
-            <Chip label={identifier} size="small" color="primary" variant="outlined" />
+            <Chip label={identifier} size="small" color={isOrange ? "secondary" : "primary"} variant="outlined" />
             <Typography variant="caption" color="text.secondary">
               {formatEventTime(createdAt)}
             </Typography>
@@ -2144,6 +2496,12 @@ function buildEscrowFilterOptions(escrows: EscrowDescriptor[]) {
 
 function normalizeOptionList(values: string[] | undefined): string[] {
   return values?.map((value) => value.trim()).filter(Boolean) ?? [];
+}
+
+function removeEmptyProfileFields(profile: ProfileContent): ProfileContent {
+  return Object.fromEntries(
+    Object.entries(profile).filter(([, value]) => typeof value === "string" && value.trim().length > 0),
+  ) as ProfileContent;
 }
 
 function uniqueSorted(values: string[]): string[] {
