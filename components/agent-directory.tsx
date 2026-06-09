@@ -18,6 +18,7 @@ import {
   List,
   ListItemButton,
   ListItemText,
+  Menu,
   MenuItem,
   OutlinedInput,
   Paper,
@@ -31,8 +32,11 @@ import {
   Drawer,
 } from "@mui/material";
 import DataObjectIcon from "@mui/icons-material/DataObject";
+import FilterListIcon from "@mui/icons-material/FilterList";
 import MenuIcon from "@mui/icons-material/Menu";
+import SearchIcon from "@mui/icons-material/Search";
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from "nostr-tools";
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import {
   buildAgentEvent,
@@ -54,6 +58,7 @@ import {
 const SECRET_KEY_STORAGE = "pontmore-pip00-poc-secret-key";
 const ESCROW_SECRET_KEY_STORAGE = "pontmore-pip00-poc-escrow-secret-key";
 const RELAYS_STORAGE = "pontmore-pip00-poc-relays";
+const LOGO_SRC = "/logo.svg";
 
 type PublishState = "idle" | "publishing" | "published" | "failed";
 type DirectoryState = "idle" | "loading" | "loaded" | "failed";
@@ -68,6 +73,18 @@ type DirectorySnapshot = {
   results: ApiRelayResult[];
   lastRefreshAt: string | null;
   refreshing: boolean;
+};
+type FilterField = {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+  formatOption?: (option: string) => string;
+};
+type RelayFooterConfig = {
+  title: string;
+  lines: string[];
+  severity: "info" | "error";
 };
 
 enum SwapDirection {
@@ -332,15 +349,24 @@ export function AgentDirectory() {
   const escrowNetworkOptions = isLightningHoldEscrow ? [Network.Lightning] : NETWORK_OPTIONS;
   const pageTitle = NAV_ITEMS.find((item) => item.value === activeTab)?.label ?? "Pontmore Protocol Next POC";
   const pagePipLink = PIP_LINKS[activeTab];
-  const pageDescription = activeTab === "discover"
-    ? `${filteredAgents.length} of ${agents.length} PIP-00 agent definition event(s) shown from configured relays.`
-    : activeTab === "publish"
-      ? "Create and publish a PIP-00 agent definition using the local agent identity."
-      : activeTab === "escrow-discover"
-        ? `${filteredEscrows.length} of ${escrows.length} PIP-01 escrow descriptor event(s) shown from configured relays.`
-        : activeTab === "escrow-publish"
-          ? "Create and publish a PIP-01 escrow descriptor using the escrow identity."
-          : "Configure default relays used for publishing and discovery.";
+  const pageMeta = activeTab === "discover"
+    ? `${filteredAgents.length} / ${agents.length} agents`
+    : activeTab === "escrow-discover"
+      ? `${filteredEscrows.length} / ${escrows.length} escrows`
+      : null;
+  const topBarAction = activeTab === "discover"
+    ? (
+        <Button variant="contained" onClick={refreshDirectory} disabled={directoryState === "loading"}>
+          {directoryState === "loading" ? "Refreshing..." : "Refresh agents"}
+        </Button>
+      )
+    : activeTab === "escrow-discover"
+      ? (
+          <Button variant="contained" onClick={refreshEscrowDirectory} disabled={escrowDirectoryState === "loading"}>
+            {escrowDirectoryState === "loading" ? "Refreshing..." : "Refresh escrows"}
+          </Button>
+        )
+      : null;
 
   async function publishAgent() {
     if (!secretKey || !pubkey) {
@@ -762,6 +788,20 @@ export function AgentDirectory() {
     setMobileNavOpen(false);
   }
 
+  const relayFooter = activeTab === "discover"
+    ? {
+        title: "Agent relay reads",
+        lines: directoryLog,
+        severity: directoryState === "failed" ? "error" as const : "info" as const,
+      }
+    : activeTab === "escrow-discover"
+      ? {
+          title: "Escrow relay reads",
+          lines: escrowDirectoryLog,
+          severity: escrowDirectoryState === "failed" ? "error" as const : "info" as const,
+        }
+      : null;
+
   return (
     <Box sx={{ minHeight: "100vh" }}>
       <AppBar
@@ -778,29 +818,19 @@ export function AgentDirectory() {
           <IconButton edge="start" aria-label="Open navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { md: "none" }, mr: 1 }}>
             <MenuIcon />
           </IconButton>
-          <Box sx={{ alignItems: "center", display: { xs: "none", md: "flex" }, height: "100%", px: 3, width: DRAWER_WIDTH }}>
-            <Typography variant="h6" component="div" sx={{ fontWeight: 800 }}>
-              Pontmore Protocol Next POC
-            </Typography>
+          <Box sx={{ alignItems: "center", display: { xs: "none", md: "flex" }, gap: 1.25, height: "100%", px: 3, width: DRAWER_WIDTH }}>
+            <BrandLogo />
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="h6" component="div" sx={{ fontWeight: 900, letterSpacing: 0 }}>
+                PONTMORE
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.1 }}>
+                proof of concept
+              </Typography>
+            </Box>
           </Box>
           <Divider orientation="vertical" flexItem sx={{ display: { xs: "none", md: "block" } }} />
-          <Stack direction="row" spacing={1.5} sx={{ alignItems: "baseline", flex: 1, px: { xs: 0, md: 3 } }}>
-            <Typography variant="h6" component="div" sx={{ fontWeight: 800 }}>
-              {pageTitle}
-            </Typography>
-            {pagePipLink ? (
-              <Link
-                href={pagePipLink.href}
-                target="_blank"
-                rel="noreferrer"
-                underline="hover"
-                sx={{ fontSize: 14, fontWeight: 700 }}
-              >
-                {pagePipLink.label}
-              </Link>
-            ) : null}
-          </Stack>
-          <Box sx={{ bgcolor: "action.selected", borderRadius: "50%", height: 32, mr: 3, width: 32 }} />
+          <TopBarPageLabel title={pageTitle} pipLink={pagePipLink} meta={pageMeta} action={topBarAction} />
         </Toolbar>
       </AppBar>
 
@@ -840,18 +870,14 @@ export function AgentDirectory() {
       <Box
         component="main"
         sx={{
+          display: "flex",
+          flexDirection: "column",
           minHeight: "100vh",
           pl: { md: `${DRAWER_WIDTH}px` },
           pt: 7,
         }}
       >
-        <Stack spacing={3} sx={{ p: { xs: 2, md: 3 }, maxWidth: "none" }}>
-          <Box>
-            <Typography color="text.secondary" sx={{ maxWidth: 980 }}>
-              {pageDescription}
-            </Typography>
-          </Box>
-
+        <Stack spacing={2.5} sx={{ flex: 1, p: { xs: 2, md: 3 }, maxWidth: "none" }}>
         {activeTab === "publish" ? (
           <Box sx={{ display: "grid", gap: 2.5, gridTemplateColumns: { xs: "1fr", md: "320px 1fr" }, alignItems: "start" }}>
             <IdentityPanel
@@ -1119,44 +1145,38 @@ export function AgentDirectory() {
 
         {activeTab === "discover" ? (
           <Stack spacing={2}>
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ justifyContent: "flex-end", alignItems: { xs: "stretch", sm: "center" } }}>
-              <Button variant="contained" onClick={refreshDirectory} disabled={directoryState === "loading"}>
-                {directoryState === "loading" ? "Refreshing..." : "Refresh directory"}
-              </Button>
-            </Stack>
-
             <Paper variant="outlined" sx={{ p: 2 }}>
-              <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "repeat(4, minmax(0, 1fr)) auto" }, alignItems: "center" }}>
-                <FilterSelect label="Currency" value={currencyFilter} options={filterOptions.currencies} onChange={setCurrencyFilter} />
-                <FilterSelect label="Swap direction" value={swapDirectionFilter} options={filterOptions.swapDirections} onChange={setSwapDirectionFilter} formatOption={formatProtocolValue} />
-                <FilterSelect label="Payment channel" value={paymentChannelFilter} options={filterOptions.paymentChannels} onChange={setPaymentChannelFilter} formatOption={formatProtocolValue} />
-                <FilterSelect label="Selected escrow" value={escrowFilter} options={filterOptions.escrows} onChange={setEscrowFilter} />
-                <Button variant="outlined" onClick={clearAgentFilters} disabled={activeFilterCount === 0}>Clear filters</Button>
-              </Box>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: { xs: "stretch", sm: "center" } }}>
+                <TextField
+                  fullWidth
+                  label="Pubkey or coordinate"
+                  value={coordinate}
+                  placeholder="<pubkey> or 30360:<pubkey>:agent"
+                  onChange={(event) => {
+                    setCoordinate(event.target.value);
+                    if (!event.target.value.trim()) {
+                      setAgentLookupFilter("");
+                    }
+                  }}
+                />
+                <SearchActionButton
+                  label="Search agents"
+                  loading={directoryState === "loading"}
+                  onClick={lookupCoordinate}
+                />
+                <FilterMenu
+                  label="Agent filters"
+                  activeCount={activeFilterCount}
+                  fields={[
+                    { label: "Currency", value: currencyFilter, options: filterOptions.currencies, onChange: setCurrencyFilter },
+                    { label: "Swap direction", value: swapDirectionFilter, options: filterOptions.swapDirections, onChange: setSwapDirectionFilter, formatOption: formatProtocolValue },
+                    { label: "Payment channel", value: paymentChannelFilter, options: filterOptions.paymentChannels, onChange: setPaymentChannelFilter, formatOption: formatProtocolValue },
+                    { label: "Selected escrow", value: escrowFilter, options: filterOptions.escrows, onChange: setEscrowFilter },
+                  ]}
+                  onClear={clearAgentFilters}
+                />
+              </Stack>
             </Paper>
-
-            <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "1fr 380px" }, alignItems: "start" }}>
-              <Paper variant="outlined" sx={{ p: 2 }}>
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: { xs: "stretch", sm: "center" } }}>
-                  <TextField
-                    fullWidth
-                    label="Pubkey or coordinate"
-                    value={coordinate}
-                    placeholder="<pubkey> or 30360:<pubkey>:agent"
-                    onChange={(event) => {
-                      setCoordinate(event.target.value);
-                      if (!event.target.value.trim()) {
-                        setAgentLookupFilter("");
-                      }
-                    }}
-                  />
-                  <Button variant="contained" onClick={lookupCoordinate} disabled={directoryState === "loading"} sx={{ minWidth: 120 }}>
-                    {directoryState === "loading" ? "Looking..." : "Lookup"}
-                  </Button>
-                </Stack>
-              </Paper>
-              {directoryLog.length > 0 ? <StatusLog title="Relay reads" lines={directoryLog} severity={directoryState === "failed" ? "error" : "info"} /> : null}
-            </Box>
 
             <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "repeat(3, minmax(0, 1fr))" } }}>
               {filteredAgents.map((agent) => (
@@ -1173,43 +1193,37 @@ export function AgentDirectory() {
 
         {activeTab === "escrow-discover" ? (
           <Stack spacing={2}>
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ justifyContent: "flex-end", alignItems: { xs: "stretch", sm: "center" } }}>
-              <Button variant="contained" onClick={refreshEscrowDirectory} disabled={escrowDirectoryState === "loading"}>
-                {escrowDirectoryState === "loading" ? "Refreshing..." : "Refresh escrows"}
-              </Button>
-            </Stack>
-
             <Paper variant="outlined" sx={{ p: 2 }}>
-              <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "repeat(3, minmax(0, 1fr)) auto" }, alignItems: "center" }}>
-                <FilterSelect label="Escrow type" value={escrowTypeFilter} options={escrowFilterOptions.types} onChange={setEscrowTypeFilter} formatOption={formatProtocolValue} />
-                <FilterSelect label="Network" value={escrowNetworkFilter} options={escrowFilterOptions.networks} onChange={setEscrowNetworkFilter} formatOption={formatProtocolValue} />
-                <FilterSelect label="Reference format" value={escrowReferenceFormatFilter} options={escrowFilterOptions.referenceFormats} onChange={setEscrowReferenceFormatFilter} />
-                <Button variant="outlined" onClick={clearEscrowFilters} disabled={activeEscrowFilterCount === 0}>Clear filters</Button>
-              </Box>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: { xs: "stretch", sm: "center" } }}>
+                <TextField
+                  fullWidth
+                  label="Pubkey or coordinate"
+                  value={escrowCoordinateInput}
+                  placeholder="<pubkey> or 30361:<pubkey>:escrow"
+                  onChange={(event) => {
+                    setEscrowCoordinateInput(event.target.value);
+                    if (!event.target.value.trim()) {
+                      setEscrowLookupFilter("");
+                    }
+                  }}
+                />
+                <SearchActionButton
+                  label="Search escrows"
+                  loading={escrowDirectoryState === "loading"}
+                  onClick={lookupEscrowCoordinate}
+                />
+                <FilterMenu
+                  label="Escrow filters"
+                  activeCount={activeEscrowFilterCount}
+                  fields={[
+                    { label: "Escrow type", value: escrowTypeFilter, options: escrowFilterOptions.types, onChange: setEscrowTypeFilter, formatOption: formatProtocolValue },
+                    { label: "Network", value: escrowNetworkFilter, options: escrowFilterOptions.networks, onChange: setEscrowNetworkFilter, formatOption: formatProtocolValue },
+                    { label: "Reference format", value: escrowReferenceFormatFilter, options: escrowFilterOptions.referenceFormats, onChange: setEscrowReferenceFormatFilter },
+                  ]}
+                  onClear={clearEscrowFilters}
+                />
+              </Stack>
             </Paper>
-
-            <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "1fr 380px" }, alignItems: "start" }}>
-              <Paper variant="outlined" sx={{ p: 2 }}>
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: { xs: "stretch", sm: "center" } }}>
-                  <TextField
-                    fullWidth
-                    label="Pubkey or coordinate"
-                    value={escrowCoordinateInput}
-                    placeholder="<pubkey> or 30361:<pubkey>:escrow"
-                    onChange={(event) => {
-                      setEscrowCoordinateInput(event.target.value);
-                      if (!event.target.value.trim()) {
-                        setEscrowLookupFilter("");
-                      }
-                    }}
-                  />
-                  <Button variant="contained" onClick={lookupEscrowCoordinate} disabled={escrowDirectoryState === "loading"} sx={{ minWidth: 120 }}>
-                    {escrowDirectoryState === "loading" ? "Looking..." : "Lookup"}
-                  </Button>
-                </Stack>
-              </Paper>
-              {escrowDirectoryLog.length > 0 ? <StatusLog title="Relay reads" lines={escrowDirectoryLog} severity={escrowDirectoryState === "failed" ? "error" : "info"} /> : null}
-            </Box>
 
             <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "repeat(3, minmax(0, 1fr))" } }}>
               {filteredEscrows.map((escrow) => (
@@ -1259,18 +1273,118 @@ export function AgentDirectory() {
           </Card>
         ) : null}
         </Stack>
+        <PageFooter relay={relayFooter} />
       </Box>
     </Box>
+  );
+}
+
+function TopBarPageLabel({
+  title,
+  pipLink,
+  meta,
+  action,
+}: {
+  title: string;
+  pipLink?: { href: string; label: string };
+  meta: string | null;
+  action: ReactNode;
+}) {
+  return (
+    <Stack
+      direction="row"
+      spacing={1.5}
+      sx={{
+        alignItems: "center",
+        flex: 1,
+        minWidth: 0,
+        px: { xs: 1.5, md: 3 },
+      }}
+    >
+      <Stack direction="row" spacing={1.25} sx={{ alignItems: "baseline", flex: 1, minWidth: 0 }}>
+        <Typography variant="h6" component="h1" noWrap sx={{ fontWeight: 800 }}>
+          {title}
+        </Typography>
+        {pipLink ? (
+          <Link
+            href={pipLink.href}
+            target="_blank"
+            rel="noreferrer"
+            underline="hover"
+            sx={{ fontSize: 14, fontWeight: 700 }}
+          >
+            {pipLink.label}
+          </Link>
+        ) : null}
+      </Stack>
+      {meta ? <Chip label={meta} size="small" variant="outlined" sx={{ display: { xs: "none", sm: "inline-flex" } }} /> : null}
+      {action ? (
+        <Box sx={{ display: { xs: "none", md: "block" }, flexShrink: 0 }}>
+          {action}
+        </Box>
+      ) : null}
+    </Stack>
+  );
+}
+
+function PageFooter({ relay }: { relay: RelayFooterConfig | null }) {
+  if (!relay) {
+    return null;
+  }
+
+  return (
+    <Box
+      component="footer"
+      sx={{
+        borderTop: 1,
+        borderColor: "divider",
+        minHeight: 72,
+        px: { xs: 2, md: 3 },
+        py: 1.5,
+      }}
+    >
+      {relay.lines.length > 0 ? (
+        <StatusLog title={relay.title} lines={relay.lines} severity={relay.severity} compact />
+      ) : (
+        <Typography variant="body2" color="text.secondary">
+          Relay reads appear here after refreshing or looking up discovery events.
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
+function BrandLogo() {
+  return (
+    <Box
+      component="img"
+      src={LOGO_SRC}
+      alt=""
+      aria-hidden="true"
+      sx={{
+        borderRadius: 1,
+        flex: "0 0 auto",
+        height: 36,
+        objectFit: "contain",
+        width: 36,
+      }}
+    />
   );
 }
 
 function DashboardNav({ activeTab, onSelect }: { activeTab: ActiveTab; onSelect: (value: ActiveTab) => void }) {
   return (
     <Stack sx={{ height: "100%" }}>
-      <Box sx={{ display: { md: "none" }, p: 2.5 }}>
-        <Typography variant="h6" sx={{ fontWeight: 800, lineHeight: 1.15 }}>
-          Pontmore Protocol Next POC
-        </Typography>
+      <Box sx={{ alignItems: "center", display: { md: "none" }, gap: 1.25, p: 2.5 }}>
+        <BrandLogo />
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="h6" sx={{ fontWeight: 900, lineHeight: 1.1, letterSpacing: 0 }}>
+            PONTMORE
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+            proof of concept
+          </Typography>
+        </Box>
       </Box>
       <Divider />
       <List component="nav" aria-label="Pontmore POC sections" sx={{ p: 1 }}>
@@ -1289,7 +1403,20 @@ function DashboardNav({ activeTab, onSelect }: { activeTab: ActiveTab; onSelect:
   );
 }
 
-function StatusLog({ title, lines, severity = "info" }: { title: string; lines: string[]; severity?: "info" | "error" }) {
+function StatusLog({ title, lines, severity = "info", compact = false }: { title: string; lines: string[]; severity?: "info" | "error"; compact?: boolean }) {
+  if (compact) {
+    return (
+      <Alert severity={severity} sx={{ py: 0.75 }}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={{ xs: 0.5, sm: 2 }} sx={{ alignItems: { xs: "flex-start", sm: "center" } }}>
+          <Typography sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>{title}</Typography>
+          {lines.map((line) => (
+            <Typography variant="body2" sx={{ overflowWrap: "anywhere" }} key={line}>{line}</Typography>
+          ))}
+        </Stack>
+      </Alert>
+    );
+  }
+
   return (
     <Alert severity={severity}>
       <Typography sx={{ mb: 0.5, fontWeight: 800 }}>{title}</Typography>
@@ -1448,6 +1575,103 @@ function FilterSelect({
         <MenuItem value={option} key={option}>{formatOption(option)}</MenuItem>
       ))}
     </TextField>
+  );
+}
+
+function SearchActionButton({
+  label,
+  loading,
+  onClick,
+}: {
+  label: string;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Tooltip title={loading ? "Searching" : "Search"}>
+      <Box component="span" sx={{ display: "inline-flex", width: { xs: "100%", sm: "auto" } }}>
+        <IconButton
+          color="primary"
+          onClick={onClick}
+          disabled={loading}
+          aria-label={label}
+          sx={{
+            bgcolor: "primary.main",
+            borderRadius: 1,
+            color: "primary.contrastText",
+            height: 48,
+            width: { xs: "100%", sm: 56 },
+            "&:hover": { bgcolor: "primary.dark" },
+            "&.Mui-disabled": { bgcolor: "action.disabledBackground" },
+          }}
+        >
+          <SearchIcon />
+        </IconButton>
+      </Box>
+    </Tooltip>
+  );
+}
+
+function FilterMenu({
+  label,
+  activeCount,
+  fields,
+  onClear,
+}: {
+  label: string;
+  activeCount: number;
+  fields: FilterField[];
+  onClear: () => void;
+}) {
+  const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
+  const open = Boolean(anchorEl);
+
+  return (
+    <>
+      <Button
+        variant="outlined"
+        startIcon={<FilterListIcon />}
+        endIcon={activeCount > 0 ? <Chip label={activeCount} size="small" color="primary" sx={{ height: 22, minWidth: 22 }} /> : null}
+        onClick={(event) => setAnchorEl(event.currentTarget)}
+        aria-haspopup="menu"
+        aria-expanded={open ? "true" : undefined}
+        sx={{ justifyContent: "center", minWidth: 150 }}
+      >
+        Filters
+      </Button>
+      <Menu
+        anchorEl={anchorEl}
+        open={open}
+        onClose={() => setAnchorEl(null)}
+        slotProps={{
+          paper: {
+            sx: {
+              mt: 1,
+              width: { xs: "calc(100vw - 32px)", sm: 380 },
+              maxWidth: "calc(100vw - 32px)",
+              p: 2,
+            },
+          },
+        }}
+      >
+        <Stack spacing={2}>
+          <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", justifyContent: "space-between" }}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>{label}</Typography>
+            <Button size="small" onClick={onClear} disabled={activeCount === 0}>Clear</Button>
+          </Stack>
+          {fields.map((field) => (
+            <FilterSelect
+              key={field.label}
+              label={field.label}
+              value={field.value}
+              options={field.options}
+              onChange={field.onChange}
+              formatOption={field.formatOption}
+            />
+          ))}
+        </Stack>
+      </Menu>
+    </>
   );
 }
 

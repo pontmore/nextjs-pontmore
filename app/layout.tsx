@@ -6,6 +6,11 @@ import { MuiThemeProvider } from "./mui-theme-provider";
 export const metadata: Metadata = {
   title: "Pontmore POC",
   description: "Publish and view Pontmore PIP-00 agent definitions on Nostr relays.",
+  icons: {
+    icon: "/logo.svg",
+    shortcut: "/logo.svg",
+    apple: "/logo.svg",
+  },
 };
 
 export default function RootLayout({
