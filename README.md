@@ -14,7 +14,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Open `http://localhost:3001`.
 
 ## Docker
 
@@ -22,7 +22,7 @@ Build and run the production image locally:
 
 ```bash
 docker build -t pontmore/nextjs-pontmore .
-docker run --rm -p 3000:3000 pontmore/nextjs-pontmore
+docker run --rm -p 3001:3001 pontmore/nextjs-pontmore
 ```
 
 The GitHub Actions workflow in `.github/workflows/publish-docker.yml` publishes `pontmore/nextjs-pontmore` to Docker Hub on every push to `main`.
