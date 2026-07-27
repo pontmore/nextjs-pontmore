@@ -2205,9 +2205,15 @@ function DirectoryDefinitionCard({
     >
       <CardContent sx={{ flexGrow: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
         <Stack spacing={1.5} sx={{ flexGrow: 1, minHeight: 0 }}>
-          <Stack direction="row" spacing={1} sx={{ justifyContent: "space-between", alignItems: "center" }}>
-            <Chip label={identifier} size="small" color={isOrange ? "secondary" : "primary"} variant="outlined" />
-            <Typography variant="caption" color="text.secondary">
+          <Stack direction="row" spacing={1} sx={{ justifyContent: "space-between", alignItems: "center", minWidth: 0 }}>
+            <Chip
+              label={identifier}
+              size="small"
+              color={isOrange ? "secondary" : "primary"}
+              variant="outlined"
+              sx={{ maxWidth: "100%", minWidth: 0, "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }}
+            />
+            <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0, whiteSpace: "nowrap" }}>
               {formatEventTime(createdAt)}
             </Typography>
           </Stack>
