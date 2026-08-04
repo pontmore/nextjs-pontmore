@@ -38,6 +38,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from "nostr-tools";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
+import { escrowCoordinate } from "../lib/escrow-coordinate";
 import {
   buildAgentEvent,
   DEFAULT_RELAYS,
@@ -336,6 +337,18 @@ export function AgentDirectory() {
   useEffect(() => {
     void loadCachedAgents(true);
     void loadCachedEscrows(true);
+  }, [relays]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get("tab");
+    const escrow = params.get("escrow");
+    if (tab !== "escrow-publish" || !escrow) {
+      return;
+    }
+
+    setActiveTab("escrow-publish");
+    void loadEscrowDefinitionForCoordinate(escrow);
   }, [relays]);
 
   useEffect(() => {
@@ -904,6 +917,24 @@ export function AgentDirectory() {
     }
   }
 
+  async function loadEscrowDefinitionForCoordinate(coordinateValue: string) {
+    const snapshot = await lookupDefinition(`/api/escrows/lookup`, coordinateValue);
+    if (!snapshot) {
+      return;
+    }
+
+    const definitions = snapshot.events.map(parseEscrowEvent);
+    setEscrows((current) => mergeDirectoryItems(current, definitions));
+
+    const definition = definitions.find((escrow) => (
+      matchesLookup(escrow.event.kind, escrow.event.pubkey, escrow.identifier, coordinateValue) && escrow.content
+    ));
+
+    if (definition) {
+      prefillEscrowForm(definition);
+    }
+  }
+
   async function lookupDefinition(endpoint: string, coordinateValue: string): Promise<DirectorySnapshot | null> {
     try {
       const response = await fetch(endpoint, {
@@ -1013,11 +1044,6 @@ export function AgentDirectory() {
   function editAgentFromListing(agent: AgentDefinition) {
     prefillAgentForm(agent);
     setActiveTab("publish");
-  }
-
-  function editEscrowFromListing(escrow: EscrowDescriptor) {
-    prefillEscrowForm(escrow);
-    setActiveTab("escrow-publish");
   }
 
   function selectTab(value: ActiveTab) {
@@ -1514,12 +1540,7 @@ export function AgentDirectory() {
 
             <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "repeat(3, minmax(0, 1fr))" } }}>
               {filteredEscrows.map((escrow) => (
-                <EscrowCard
-                  escrow={escrow}
-                  activeEscrowPubkey={escrowPubkey}
-                  onEdit={editEscrowFromListing}
-                  key={escrow.event.id}
-                />
+                <EscrowCard escrow={escrow} key={escrow.event.id} />
               ))}
             </Box>
           </Stack>
@@ -2097,19 +2118,8 @@ function AgentCard({
   );
 }
 
-function EscrowCard({
-  escrow,
-  activeEscrowPubkey,
-  onEdit,
-}: {
-  escrow: EscrowDescriptor;
-  activeEscrowPubkey: string;
-  onEdit: (escrow: EscrowDescriptor) => void;
-}) {
-  const canEdit = Boolean(activeEscrowPubkey) && escrow.event.pubkey === activeEscrowPubkey && escrow.identifier === "escrow";
-  const [coordinateCopyState, setCoordinateCopyState] = useState<"idle" | "copied" | "failed">("idle");
+function EscrowCard({ escrow }: { escrow: EscrowDescriptor }) {
   const [definitionCopyState, setDefinitionCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  const [showJson, setShowJson] = useState(false);
   const coordinate = escrowCoordinate(escrow);
   const npub = nip19.npubEncode(escrow.event.pubkey);
   const escrowJson = JSON.stringify(
@@ -2125,42 +2135,48 @@ function EscrowCard({
   );
 
   return (
-    <DirectoryDefinitionCard
-      accent="orange"
-      identifier={escrow.identifier}
-      createdAt={escrow.event.created_at}
-      json={escrowJson}
-      showJson={showJson}
-      toggleLabel={showJson ? "Show escrow summary" : "Show escrow JSON"}
-      onToggleJson={() => setShowJson((current) => !current)}
-      copyState={definitionCopyState}
-      onCopyDefinition={() => copyIdentityValue(escrowJson, setDefinitionCopyState)}
-      editAction={
-        canEdit ? (
-          <Button variant="outlined" size="small" onClick={() => onEdit(escrow)}>
-            Edit in Publishing
-          </Button>
-        ) : null
-      }
+    <Card
+      variant="outlined"
+      sx={{
+        borderColor: "rgba(240, 140, 0, 0.35)",
+        borderTop: 4,
+        borderTopColor: "secondary.main",
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 300,
+      }}
     >
-      <Typography variant="h6" component="h3" sx={{ fontWeight: 800 }}>
-        {escrow.content?.escrow_type || escrow.escrowType || "Unnamed escrow"}
-      </Typography>
-      <CopyableDetail
-        label="Coordinate"
-        value={coordinate}
-        copyState={coordinateCopyState}
-        onCopy={() => copyIdentityValue(coordinate, setCoordinateCopyState)}
-      />
-      <Detail label="Networks">
-        <ValuePills values={escrow.content?.networks || escrow.networks} />
-      </Detail>
-      <Detail label="Reference format">{escrow.content?.reference_format || "None"}</Detail>
-      <Detail label="Required confirmation">{escrow.content?.funding_rules?.required_confirmation || "None"}</Detail>
-      <Detail label="Release trigger">{escrow.content?.release_rules?.release_trigger || "None"}</Detail>
-      <Detail label="Refund trigger">{escrow.content?.release_rules?.refund_trigger || "None"}</Detail>
-      <Detail label="Dispute policy">{escrow.content?.dispute_rules?.policy || "None"}</Detail>
-    </DirectoryDefinitionCard>
+      <CardContent sx={{ flexGrow: 1 }}>
+        <Stack spacing={1.5}>
+          <Typography variant="h6" component="h3" sx={{ fontWeight: 800 }}>
+            {escrow.content?.escrow_type || escrow.escrowType || "Unnamed escrow"}
+          </Typography>
+          <Detail label="Coordinate">{coordinate}</Detail>
+          <Detail label="Networks">
+            <ValuePills values={escrow.content?.networks || escrow.networks} />
+          </Detail>
+          <Detail label="Created">{formatEventTime(escrow.event.created_at)}</Detail>
+        </Stack>
+      </CardContent>
+      <CardActions
+        sx={{
+          mt: "auto",
+          px: 2,
+          py: 1.5,
+          borderTop: 1,
+          borderColor: "divider",
+          justifyContent: "space-between",
+        }}
+      >
+        <Button variant="outlined" size="small" onClick={() => copyIdentityValue(escrowJson, setDefinitionCopyState)}>
+          {definitionCopyState === "copied" ? "Copied" : "Copy definition"}
+        </Button>
+        <Button variant="outlined" size="small" href={`/escrow/${encodeURIComponent(coordinate)}`}>
+          View details
+        </Button>
+      </CardActions>
+      {definitionCopyState === "failed" ? <Alert severity="error" sx={{ mx: 2, mb: 2 }}>Clipboard write failed.</Alert> : null}
+    </Card>
   );
 }
 
@@ -2506,10 +2522,6 @@ function removeEmptyProfileFields(profile: ProfileContent): ProfileContent {
 
 function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
-}
-
-function escrowCoordinate(escrow: EscrowDescriptor): string {
-  return `${escrow.event.kind}:${escrow.event.pubkey}:${escrow.identifier}`;
 }
 
 function uniqueByValue<T extends { value: string }>(items: T[]): T[] {
